@@ -1,82 +1,112 @@
-// Pantalla que muestra la simulación de los algoritmos.
-import React, { useState, useEffect, useCallback } from 'react';
-import type { SimulationParameters } from './SetupScreen'; // Asumiendo que está en el mismo directorio
-import type { AlgorithmName } from './types'; // Asegúrate de que la ruta sea correcta
-import type { PageRepresentation } from './types'; // Asegúrate de que la ruta sea correcta
-import type { ProcessInstruction } from './types'; // Asegúrate de que la ruta sea correcta
-import type { MmuPageDetail } from './types'; // Asegúrate de que la ruta sea correcta
-import type { AlgorithmMetrics } from './types'; // Asegúrate de que la ruta sea correcta
-import { ChevronLeft, Pause, Play as PlayIcon, FastForward, RefreshCw } from 'lucide-react'; // Play renombrado a PlayIcon
+// SimulationScreen.tsx
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import type { SimulationParameters } from './SetupScreen';
+import type {
+  AlgorithmName,
+  ProcessInstruction,
+  PageFrame,
+  LogicalPage,
+  AlgorithmMetrics,
+  AlgorithmSimulationState,
+  PageReplacementContext,
+  PageReplacementDecision,
+} from './types';
+import { pageReplacementAlgorithms } from './algorithms';
+import { ChevronLeft, Pause, Play as PlayIcon, RefreshCw } from 'lucide-react';
+import seedrandom from 'seedrandom';
 
-// --- Componentes Internos de Simulación ---
+const PAGE_SIZE_BYTES = 4 * 1024; // 4KB
+const PAGE_SIZE_KB = 4;
+const TOTAL_RAM_FRAMES = 100; // 400KB RAM / 4KB por página = 100 marcos
+const TOTAL_RAM_KB = TOTAL_RAM_FRAMES * PAGE_SIZE_KB;
 
+const HIT_TIME = 1; // 1s
+const FAULT_TIME = 5; // 5s (incluye acceso a disco)
+
+// --- Componentes de UI Internos (sin cambios mayores, adaptados a nuevos tipos si es necesario) ---
 interface RamViewProps {
-  pages: PageRepresentation[]; // Array de 100 páginas
+  pages: PageFrame[];
   pageSizeKb: number;
+  mmu: ReadonlyArray<LogicalPage>; // Para obtener color por PID
 }
 
-const RamView: React.FC<RamViewProps> = ({ pages, pageSizeKb }) => {
+const getPageColorByPid = (pid: string | undefined): string => {
+    if (!pid) return 'bg-gray-400'; // Color para marcos libres o sin PID
+    const colors = [
+        'bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
+        'bg-pink-500', 'bg-indigo-500', 'bg-teal-500', 'bg-orange-500', 'bg-lime-500',
+        'bg-cyan-500', 'bg-rose-500', 'bg-fuchsia-500', 'bg-sky-500', 'bg-emerald-500'
+    ];
+    let hash = 0;
+    for (let i = 0; i < pid.length; i++) {
+        hash = pid.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return colors[Math.abs(hash) % colors.length];
+};
+
+const RamView: React.FC<RamViewProps> = ({ pages, pageSizeKb, mmu }) => {
   const totalRamKb = pages.length * pageSizeKb;
   return (
     <div className="mb-4 p-3 bg-gray-700 rounded-lg shadow">
       <h4 className="text-sm font-semibold text-cyan-300 mb-2">RAM ({totalRamKb}KB)</h4>
-      <div className="flex flex-wrap h-20 bg-gray-600 rounded overflow-hidden border border-gray-500">
-        {pages.map((page, index) => (
-          <div
-            key={page.id || `ram-${index}`} // Usar page.id si está disponible y es único
-            title={`Página ${index} (ID: ${page.id || 'N/A'})${page.pid ? ` - PID: ${page.pid}` : ''}${page.isLoadedInRam ? ' - Ocupada' : ' - Libre'}`}
-            className={`w-[1%] h-full border-r border-b border-gray-500 ${
-              page.isLoadedInRam && page.pid ? (getPageColor(page.pid)) : 'bg-gray-400'
-            } hover:opacity-80 transition-opacity`}
-          />
-        ))}
+      <div className="grid grid-cols-20 grid-rows-5 h-28 bg-gray-600 rounded overflow-hidden border border-gray-500">
+        {pages.map((frame) => {
+          const logicalPage = frame.isOccupied && frame.logicalPageId ? mmu.find(p => p.id === frame.logicalPageId) : undefined;
+          const color = frame.isOccupied && logicalPage ? getPageColorByPid(logicalPage.pid) : 'bg-gray-400';
+          return (
+            <div
+              key={`ram-frame-${frame.frameId}`}
+              title={`Marco ${frame.frameId}${frame.isOccupied && logicalPage ? ` - PID: ${logicalPage.pid} - Pág.Lógica: ${logicalPage.id}` : ' - Libre'}`}
+              className={`w-full h-full border-r border-b border-gray-500 ${color} hover:opacity-80 transition-opacity`}
+            />
+          );
+        })}
       </div>
     </div>
   );
 };
-// Función para asignar colores a los PIDs (simple, para demostración)
-const getPageColor = (pid: string): string => {
-    const colors = [
-        'bg-red-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-purple-500',
-        'bg-pink-500', 'bg-indigo-500', 'bg-teal-500', 'bg-orange-500', 'bg-lime-500'
-    ];
-    const hash = pid.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
-    return colors[hash % colors.length];
-};
-
 
 interface MmuTableViewProps {
-  pageDetails: MmuPageDetail[];
+  logicalPages: ReadonlyArray<LogicalPage>; // Ahora usa LogicalPage[]
+  pageSizeKb: number;
 }
-const MmuTableView: React.FC<MmuTableViewProps> = ({ pageDetails }) => {
-  if (pageDetails.length === 0) {
+const MmuTableView: React.FC<MmuTableViewProps> = ({ logicalPages, pageSizeKb }) => {
+  if (logicalPages.length === 0) {
     return <p className="text-sm text-gray-400 italic">No hay páginas en la MMU actualmente.</p>;
   }
   return (
     <div className="mb-4 max-h-60 overflow-y-auto bg-gray-700 p-3 rounded-lg shadow">
-      <h4 className="text-sm font-semibold text-cyan-300 mb-2">Tabla MMU</h4>
+      <h4 className="text-sm font-semibold text-cyan-300 mb-2">Tabla de Páginas Lógicas (MMU)</h4>
       <table className="w-full text-xs text-left">
         <thead className="text-gray-300 bg-gray-600">
           <tr>
-            <th className="p-2">Page ID</th>
-            <th className="p-2">PID</th>
-            <th className="p-2">En RAM</th>
-            <th className="p-2">M-Addr</th>
-            <th className="p-2">D-Addr</th>
-            <th className="p-2">Cargada (T)</th>
-            <th className="p-2">Marca</th>
+            <th className="p-1.5">ID Pág. Lógica</th>
+            <th className="p-1.5">PID</th>
+            <th className="p-1.5">ptrId</th>
+            <th className="p-1.5">Índice</th>
+            <th className="p-1.5">En RAM</th>
+            <th className="p-1.5">Marco RAM</th>
+            <th className="p-1.5">Dir. Disco</th>
+            <th className="p-1.5">Cargada (T)</th>
+            <th className="p-1.5">Últ. Acceso (T)</th>
+            <th className="p-1.5">Bit R (SC)</th>
+            <th className="p-1.5">Cont. (B)</th>
           </tr>
         </thead>
         <tbody className="text-gray-200">
-          {pageDetails.map((p) => (
+          {logicalPages.map((p) => (
             <tr key={p.id} className="border-b border-gray-600 hover:bg-gray-650 transition-colors">
-              <td className="p-2">{p.id}</td>
-              <td className="p-2">{p.pid || '-'}</td>
-              <td className="p-2">{p.isLoadedInRam ? 'Sí' : 'No'}</td>
-              <td className="p-2">{p.isLoadedInRam ? p.physicalAddress : '-'}</td>
-              <td className="p-2">{!p.isLoadedInRam ? p.diskAddress : '-'}</td>
-              <td className="p-2">{p.loadedTimestamp || '-'}</td>
-              <td className="p-2">{p.mark || '-'}</td>
+              <td className="p-1.5 truncate max-w-[80px]" title={p.id}>{p.id}</td>
+              <td className="p-1.5">{p.pid}</td>
+              <td className="p-1.5">{p.ptrId}</td>
+              <td className="p-1.5">{p.pageIndexInPtr}</td>
+              <td className="p-1.5">{p.isLoadedInRam ? 'Sí' : 'No'}</td>
+              <td className="p-1.5">{p.isLoadedInRam && p.frameId !== undefined ? p.frameId : '-'}</td>
+              <td className="p-1.5">{!p.isLoadedInRam && p.diskAddress ? p.diskAddress : '-'}</td>
+              <td className="p-1.5">{p.ramLoadTimestamp ?? '-'}</td>
+              <td className="p-1.5">{p.ramLastAccessTimestamp ?? '-'}</td>
+              <td className="p-1.5">{p.referencedBit === undefined ? '-' : (p.referencedBit ? '1' : '0')}</td>
+              <td className="p-1.5">{p.contentSizeBytes}</td>
             </tr>
           ))}
         </tbody>
@@ -89,69 +119,66 @@ interface MetricsDisplayProps {
   metrics: AlgorithmMetrics;
 }
 const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ metrics }) => {
-  const thrashingPercentage = metrics.totalSimulationTime > 0 ? (metrics.thrashingTime / metrics.totalSimulationTime) * 100 : 0;
+  const thrashingDisplayPercentage = metrics.totalSimulationTime > 0 ? (metrics.thrashingTime / metrics.totalSimulationTime) * 100 : 0;
+  metrics.thrashingPercentage = thrashingDisplayPercentage; // Actualizar en el objeto
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs bg-gray-700 p-3 rounded-lg shadow">
-      <div className="bg-gray-600 p-2 rounded">
-        <span className="font-semibold text-cyan-400">Procesos Corriendo:</span> {metrics.runningProcessesCount}
+    <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs bg-gray-700 p-3 rounded-lg shadow">
+      <div className="bg-gray-600 p-1.5 rounded"><span className="font-semibold text-cyan-400">Procesos Corriendo:</span> {metrics.runningProcessesCount}</div>
+      <div className="bg-gray-600 p-1.5 rounded"><span className="font-semibold text-cyan-400">Tiempo Total:</span> {metrics.totalSimulationTime.toFixed(0)}s</div>
+      <div className="bg-gray-600 p-1.5 rounded"><span className="font-semibold text-cyan-400">RAM Usada:</span> {metrics.ramUsedKb.toFixed(0)}KB ({metrics.ramUsedPercentage.toFixed(1)}%)</div>
+      <div className="bg-gray-600 p-1.5 rounded"><span className="font-semibold text-cyan-400">V-RAM Usada:</span> {metrics.vRamUsedKb.toFixed(0)}KB ({metrics.vRamUsedPercentageOfRam.toFixed(1)}% de RAM)</div>
+      <div className={`bg-gray-600 p-1.5 rounded ${thrashingDisplayPercentage > 50 ? 'text-red-400 border border-red-500' : ''}`}>
+        <span className="font-semibold">Thrashing:</span> {metrics.thrashingTime.toFixed(0)}s ({thrashingDisplayPercentage.toFixed(1)}%)
       </div>
-      <div className="bg-gray-600 p-2 rounded">
-        <span className="font-semibold text-cyan-400">Tiempo Total:</span> {metrics.totalSimulationTime}s
-      </div>
-      <div className="bg-gray-600 p-2 rounded">
-        <span className="font-semibold text-cyan-400">RAM Usada:</span> {metrics.ramUsedKb}KB ({metrics.ramUsedPercentage.toFixed(1)}%)
-      </div>
-      <div className="bg-gray-600 p-2 rounded">
-        <span className="font-semibold text-cyan-400">V-RAM Usada:</span> {metrics.vRamUsedKb}KB ({metrics.vRamUsedPercentageOfRam.toFixed(1)}% de RAM)
-      </div>
-      <div className={`bg-gray-600 p-2 rounded ${thrashingPercentage > 50 ? 'text-red-400 border border-red-500' : ''}`}>
-        <span className="font-semibold ">Thrashing:</span> {metrics.thrashingTime}s ({thrashingPercentage.toFixed(1)}%)
-      </div>
-      <div className="bg-gray-600 p-2 rounded">
-        <span className="font-semibold text-cyan-400">Fragmentación Interna:</span> {metrics.internalFragmentationKb}KB
-      </div>
+      <div className="bg-gray-600 p-1.5 rounded"><span className="font-semibold text-cyan-400">Frag. Interna:</span> {metrics.internalFragmentationKb.toFixed(2)}KB</div>
+      <div className="bg-gray-600 p-1.5 rounded"><span className="font-semibold text-cyan-400">Page Faults:</span> {metrics.pageFaults}</div>
+      <div className="bg-gray-600 p-1.5 rounded"><span className="font-semibold text-cyan-400">Page Hits:</span> {metrics.pageHits}</div>
     </div>
   );
 };
-
 
 interface AlgorithmVisualizerProps {
-  algorithmName: string;
-  ramPages: PageRepresentation[];
-  mmuPageDetails: MmuPageDetail[];
-  metrics: AlgorithmMetrics;
+  simState: AlgorithmSimulationState;
   pageSizeKb: number;
 }
-const AlgorithmVisualizer: React.FC<AlgorithmVisualizerProps> = ({ algorithmName, ramPages, mmuPageDetails, metrics, pageSizeKb }) => {
+const AlgorithmVisualizer: React.FC<AlgorithmVisualizerProps> = ({ simState, pageSizeKb }) => {
   return (
     <div className="bg-gray-800 p-4 rounded-lg shadow-xl w-full">
-      <h3 className="text-xl font-bold text-center text-cyan-400 mb-3">{algorithmName}</h3>
-      <RamView pages={ramPages} pageSizeKb={pageSizeKb} />
-      <MmuTableView pageDetails={mmuPageDetails} />
-      <MetricsDisplay metrics={metrics} />
+      <h3 className="text-xl font-bold text-center text-cyan-400 mb-3">{simState.algorithmName}</h3>
+      <RamView pages={simState.ramFrames} pageSizeKb={pageSizeKb} mmu={simState.mmu} />
+      <MmuTableView logicalPages={simState.mmu} pageSizeKb={pageSizeKb} />
+      <MetricsDisplay metrics={simState.metrics} />
     </div>
   );
 };
 
-// --- Componente Principal de la Pantalla de Simulación ---
+
+// --- Lógica Principal de Simulación ---
 interface SimulationScreenProps {
   params: SimulationParameters;
   operations: ProcessInstruction[];
+  initialNextPtrId: number; // El siguiente ptrId global a asignar si se generaron operaciones
   onBackToSetup: () => void;
 }
 
-// Estado inicial para un algoritmo (placeholder)
-const getInitialAlgorithmState = (name: string): { ram: PageRepresentation[], mmu: MmuPageDetail[], metrics: AlgorithmMetrics } => {
-  const initialRamPages: PageRepresentation[] = Array(100).fill(null).map((_, i) => ({
-    id: `ram_page_${name}_${i}`,
-    isLoadedInRam: false,
-    pid: undefined,
-    physicalAddress: i, // Marco de página
+const getInitialAlgorithmSimulationState = (
+  name: AlgorithmName,
+  seed: string,
+  initialPtrId: number
+): AlgorithmSimulationState => {
+  const ramFrames: PageFrame[] = Array(TOTAL_RAM_FRAMES).fill(null).map((_, i) => ({
+    frameId: i,
+    isOccupied: false,
   }));
   return {
-    ram: initialRamPages,
+    algorithmName: name,
+    ramFrames,
     mmu: [],
     metrics: {
+      algorithmName: name,
+      pageFaults: 0,
+      pageHits: 0,
       runningProcessesCount: 0,
       totalSimulationTime: 0,
       ramUsedKb: 0,
@@ -161,311 +188,431 @@ const getInitialAlgorithmState = (name: string): { ram: PageRepresentation[], mm
       thrashingTime: 0,
       internalFragmentationKb: 0,
     },
+    scHandPosition: 0,
+    nextPtrIdToAssign: initialPtrId,
+    activePointers: new Map<number, { pid: string; pageIds: string[] }>(),
+    rng: seedrandom(seed + name), // Usar semilla + nombre para RND diferente por panel si es necesario
   };
 };
 
 
-export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, operations, onBackToSetup }) => {
-  const PAGE_SIZE_KB = 4;
-  const TOTAL_RAM_PAGES = 100; // 400KB / 4KB per page
-
-  // Estados para cada algoritmo
-  const [optState, setOptState] = useState(getInitialAlgorithmState('OPT'));
-  const [selectedAlgoState, setSelectedAlgoState] = useState(getInitialAlgorithmState(params.selectedAlgorithm));
+export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, operations, initialNextPtrId, onBackToSetup }) => {
+  const [optSimState, setOptSimState] = useState<AlgorithmSimulationState>(() =>
+    getInitialAlgorithmSimulationState('OPT', params.seed, initialNextPtrId)
+  );
+  const [selectedAlgoSimState, setSelectedAlgoSimState] = useState<AlgorithmSimulationState>(() =>
+    getInitialAlgorithmSimulationState(params.selectedAlgorithm, params.seed, initialNextPtrId)
+  );
 
   const [isPaused, setIsPaused] = useState(true);
   const [currentOperationIndex, setCurrentOperationIndex] = useState(0);
-  const [simulationSpeed, setSimulationSpeed] = useState(1000); // ms por operación
+  const [simulationSpeedMs, setSimulationSpeedMs] = useState(1000); // ms por operación
 
-  // Lógica de simulación (muy simplificada, debe ser reemplazada)
+  const processAlgorithmStep = useCallback((
+    currentSimState: AlgorithmSimulationState,
+    operation: ProcessInstruction,
+    allOpsForOpt: ProcessInstruction[],
+    currentOpIdxForOpt: number
+  ): AlgorithmSimulationState => {
+    
+    let newState = JSON.parse(JSON.stringify(currentSimState)) as AlgorithmSimulationState; // Deep copy
+    // Restaurar funciones y Mapas que no se serializan bien con JSON.parse(JSON.stringify())
+    newState.rng = currentSimState.rng; 
+    newState.activePointers = new Map(currentSimState.activePointers);
+
+
+    const { algorithmName, rng } = newState;
+    const algoFn = pageReplacementAlgorithms[algorithmName];
+
+    // --- 1. Manejar la operación ---
+    switch (operation.type) {
+      case 'new': {
+        const { pid, size, ptrId: assignedPtrId } = operation;
+        if (size === undefined || assignedPtrId === undefined) {
+          console.error(`[${algorithmName}] Operación 'new' inválida:`, operation);
+          break;
+        }
+
+        const numPagesNeeded = Math.ceil(size / PAGE_SIZE_BYTES);
+        const newLogicalPageIds: string[] = [];
+
+        for (let i = 0; i < numPagesNeeded; i++) {
+          const logicalPageId = `ptr${assignedPtrId}_page${i}_pid${pid}`;
+          newLogicalPageIds.push(logicalPageId);
+          const contentSize = (i === numPagesNeeded - 1) ? (size % PAGE_SIZE_BYTES || PAGE_SIZE_BYTES) : PAGE_SIZE_BYTES;
+          
+          let newPage: LogicalPage = {
+            id: logicalPageId,
+            pid,
+            ptrId: assignedPtrId,
+            pageIndexInPtr: i,
+            isLoadedInRam: false, // Se determinará a continuación
+            contentSizeBytes: contentSize,
+            diskAddress: `disk_${logicalPageId}`, // Dirección inicial en disco
+            referencedBit: algorithmName === 'SC' ? false : undefined, // R=0 para SC inicialmente
+          };
+          newState.mmu.push(newPage);
+          newState.metrics.vRamUsedKb += PAGE_SIZE_KB; // Asumir que va a VRAM inicialmente si no cabe en RAM
+
+          // Intentar cargar en RAM
+          const freeFrame = newState.ramFrames.find(f => !f.isOccupied);
+          if (freeFrame) {
+            newPage.isLoadedInRam = true;
+            newPage.frameId = freeFrame.frameId;
+            newPage.diskAddress = undefined;
+            newPage.ramLoadTimestamp = newState.metrics.totalSimulationTime;
+            newPage.ramLastAccessTimestamp = newState.metrics.totalSimulationTime;
+            
+            freeFrame.isOccupied = true;
+            freeFrame.logicalPageId = newPage.id;
+            freeFrame.pid = pid;
+            freeFrame.loadedTimestamp = newState.metrics.totalSimulationTime;
+            freeFrame.lastAccessTimestamp = newState.metrics.totalSimulationTime;
+            freeFrame.referencedBit = newPage.referencedBit;
+
+            newState.metrics.pageHits++; // Considerar 'new' en frame libre como hit
+            newState.metrics.totalSimulationTime += HIT_TIME;
+            newState.metrics.ramUsedKb += PAGE_SIZE_KB;
+            newState.metrics.vRamUsedKb -= PAGE_SIZE_KB; // Se movió de VRAM a RAM
+          } else { // No hay marcos libres, se requiere reemplazo (fallo de página)
+            newState.metrics.pageFaults++;
+            newState.metrics.totalSimulationTime += FAULT_TIME;
+            newState.metrics.thrashingTime += FAULT_TIME;
+
+            if (!algoFn) {
+              console.error(`[${algorithmName}] Algoritmo de reemplazo no encontrado!`);
+              break; 
+            }
+            const replacementContext: PageReplacementContext = {
+              ramFrames: newState.ramFrames,
+              mmu: newState.mmu,
+              pageToLoad: newPage,
+              futureOperations: algorithmName === 'OPT' ? allOpsForOpt : undefined,
+              currentOperationIndex: algorithmName === 'OPT' ? currentOpIdxForOpt : undefined,
+              scHandPosition: newState.scHandPosition,
+              rng: rng!,
+            };
+            const decision = algoFn(replacementContext);
+            
+            const victimFrame = newState.ramFrames[decision.victimFrameId];
+            if (victimFrame.logicalPageId) { // Desalojar página víctima
+              const victimLogicalPage = newState.mmu.find(p => p.id === victimFrame.logicalPageId);
+              if (victimLogicalPage) {
+                victimLogicalPage.isLoadedInRam = false;
+                victimLogicalPage.frameId = undefined;
+                victimLogicalPage.diskAddress = `disk_${victimLogicalPage.id}`;
+                // No se resta de ramUsedKb aquí, se hace al cargar la nueva.
+                // vRamUsedKb aumenta porque la víctima va a disco.
+                newState.metrics.vRamUsedKb += PAGE_SIZE_KB;
+              }
+            }
+            
+            // Cargar nueva página en el marco de la víctima
+            newPage.isLoadedInRam = true;
+            newPage.frameId = victimFrame.frameId;
+            newPage.diskAddress = undefined;
+            newPage.ramLoadTimestamp = newState.metrics.totalSimulationTime;
+            newPage.ramLastAccessTimestamp = newState.metrics.totalSimulationTime;
+
+            victimFrame.isOccupied = true;
+            victimFrame.logicalPageId = newPage.id;
+            victimFrame.pid = pid;
+            victimFrame.loadedTimestamp = newState.metrics.totalSimulationTime;
+            victimFrame.lastAccessTimestamp = newState.metrics.totalSimulationTime;
+            victimFrame.referencedBit = newPage.referencedBit;
+            
+            newState.metrics.ramUsedKb += PAGE_SIZE_KB; // La nueva página usa RAM
+            newState.metrics.vRamUsedKb -= PAGE_SIZE_KB; // Se movió de VRAM a RAM
+
+            // Manejo especial para SC post-decisión
+            if (algorithmName === 'SC') {
+                newState.scHandPosition = decision.nextScHandPosition;
+                decision.pagesWhoseRBitShouldBeCleared?.forEach(idToClear => {
+                    const pageToUpdate = newState.mmu.find(p => p.id === idToClear);
+                    if (pageToUpdate && pageToUpdate.isLoadedInRam) {
+                        pageToUpdate.referencedBit = false;
+                        const frameOfPage = newState.ramFrames.find(f => f.logicalPageId === idToClear);
+                        if (frameOfPage) frameOfPage.referencedBit = false;
+                    }
+                });
+            }
+          }
+        }
+        newState.activePointers.set(assignedPtrId, { pid, pageIds: newLogicalPageIds });
+        newState.nextPtrIdToAssign = Math.max(newState.nextPtrIdToAssign, assignedPtrId + 1);
+        break;
+      }
+      case 'use': {
+        const { ptrId } = operation;
+        if (ptrId === undefined) break;
+        const pointerInfo = newState.activePointers.get(ptrId);
+        if (!pointerInfo) {
+          console.warn(`[${algorithmName}] Intento de usar ptrId ${ptrId} no existente o no activo.`);
+          break;
+        }
+
+        for (const logicalPageId of pointerInfo.pageIds) {
+            const page = newState.mmu.find(p => p.id === logicalPageId);
+            if (!page) continue;
+
+            page.ramLastAccessTimestamp = newState.metrics.totalSimulationTime; // Actualizar incluso si ya está en RAM
+            if (algorithmName === 'SC') page.referencedBit = true; // Marcar como referenciada para SC
+
+            const frameInRam = page.isLoadedInRam ? newState.ramFrames.find(f => f.frameId === page.frameId) : null;
+            if (frameInRam) { // Page Hit
+                frameInRam.lastAccessTimestamp = newState.metrics.totalSimulationTime;
+                if (algorithmName === 'SC') frameInRam.referencedBit = true;
+                newState.metrics.pageHits++;
+                newState.metrics.totalSimulationTime += HIT_TIME;
+            } else { // Page Fault
+                newState.metrics.pageFaults++;
+                newState.metrics.totalSimulationTime += FAULT_TIME;
+                newState.metrics.thrashingTime += FAULT_TIME;
+
+                const freeFrame = newState.ramFrames.find(f => !f.isOccupied);
+                let targetFrameId = -1;
+
+                if (freeFrame) {
+                    targetFrameId = freeFrame.frameId;
+                } else { // No hay marcos libres, se requiere reemplazo
+                    if (!algoFn) { console.error(`[${algorithmName}] Algoritmo de reemplazo no encontrado!`); break; }
+                    const replacementContext: PageReplacementContext = {
+                        ramFrames: newState.ramFrames, mmu: newState.mmu, pageToLoad: page,
+                        futureOperations: algorithmName === 'OPT' ? allOpsForOpt : undefined,
+                        currentOperationIndex: algorithmName === 'OPT' ? currentOpIdxForOpt : undefined,
+                        scHandPosition: newState.scHandPosition, rng: rng!,
+                    };
+                    const decision = algoFn(replacementContext);
+                    targetFrameId = decision.victimFrameId;
+
+                    const victimFrameToEvict = newState.ramFrames[targetFrameId];
+                    if (victimFrameToEvict.logicalPageId) {
+                        const victimLogicalPage = newState.mmu.find(p => p.id === victimFrameToEvict.logicalPageId);
+                        if (victimLogicalPage) {
+                            victimLogicalPage.isLoadedInRam = false;
+                            victimLogicalPage.frameId = undefined;
+                            victimLogicalPage.diskAddress = `disk_${victimLogicalPage.id}`;
+                            newState.metrics.vRamUsedKb += PAGE_SIZE_KB; // Víctima a disco
+                            // ramUsedKb no cambia aún, la nueva página ocupará este espacio.
+                        }
+                    }
+                     if (algorithmName === 'SC') { // Manejo SC post-decisión
+                        newState.scHandPosition = decision.nextScHandPosition;
+                        decision.pagesWhoseRBitShouldBeCleared?.forEach(idToClear => {
+                            const pageToUpdate = newState.mmu.find(p => p.id === idToClear);
+                            if (pageToUpdate && pageToUpdate.isLoadedInRam) {
+                                pageToUpdate.referencedBit = false;
+                                const frameOfPage = newState.ramFrames.find(f => f.logicalPageId === idToClear);
+                                if (frameOfPage) frameOfPage.referencedBit = false;
+                            }
+                        });
+                    }
+                }
+                
+                // Cargar la página requerida en targetFrameId
+                const frameToLoadInto = newState.ramFrames[targetFrameId];
+                page.isLoadedInRam = true;
+                page.frameId = frameToLoadInto.frameId;
+                page.diskAddress = undefined;
+                page.ramLoadTimestamp = newState.metrics.totalSimulationTime; // Nuevo tiempo de carga
+                // page.ramLastAccessTimestamp ya se actualizó arriba
+                // page.referencedBit ya se actualizó arriba para SC
+
+                frameToLoadInto.isOccupied = true;
+                frameToLoadInto.logicalPageId = page.id;
+                frameToLoadInto.pid = page.pid;
+                frameToLoadInto.loadedTimestamp = page.ramLoadTimestamp;
+                frameToLoadInto.lastAccessTimestamp = page.ramLastAccessTimestamp;
+                frameToLoadInto.referencedBit = page.referencedBit;
+                
+                if (!freeFrame) newState.metrics.ramUsedKb += 0; // Si hubo reemplazo, el total de RAM usada no cambia por esta página
+                else newState.metrics.ramUsedKb += PAGE_SIZE_KB; // Si usó frame libre
+                
+                newState.metrics.vRamUsedKb -= PAGE_SIZE_KB; // Se movió de VRAM a RAM
+            }
+        }
+        break;
+      }
+      case 'delete': {
+        const { ptrId } = operation;
+        if (ptrId === undefined) break;
+        const pointerInfo = newState.activePointers.get(ptrId);
+        if (!pointerInfo) break;
+
+        for (const logicalPageId of pointerInfo.pageIds) {
+            const pageIndex = newState.mmu.findIndex(p => p.id === logicalPageId);
+            if (pageIndex === -1) continue;
+            const page = newState.mmu[pageIndex];
+
+            if (page.isLoadedInRam && page.frameId !== undefined) {
+                const frame = newState.ramFrames[page.frameId];
+                frame.isOccupied = false;
+                frame.logicalPageId = undefined;
+                frame.pid = undefined;
+                frame.loadedTimestamp = undefined;
+                frame.lastAccessTimestamp = undefined;
+                frame.referencedBit = undefined;
+                newState.metrics.ramUsedKb -= PAGE_SIZE_KB;
+            } else { // Estaba en disco
+                newState.metrics.vRamUsedKb -= PAGE_SIZE_KB;
+            }
+            newState.mmu.splice(pageIndex, 1); // Eliminar de la MMU
+        }
+        newState.activePointers.delete(ptrId);
+        break;
+      }
+      case 'kill': {
+        const { pid } = operation;
+        const ptrIdsToKill: number[] = [];
+        newState.activePointers.forEach((info, ptrId) => {
+            if (info.pid === pid) ptrIdsToKill.push(ptrId);
+        });
+
+        for (const ptrId of ptrIdsToKill) {
+            const pointerInfo = newState.activePointers.get(ptrId);
+            if (!pointerInfo) continue;
+            for (const logicalPageId of pointerInfo.pageIds) {
+                const pageIndex = newState.mmu.findIndex(p => p.id === logicalPageId);
+                if (pageIndex === -1) continue;
+                const page = newState.mmu[pageIndex];
+
+                if (page.isLoadedInRam && page.frameId !== undefined) {
+                    const frame = newState.ramFrames[page.frameId];
+                    frame.isOccupied = false;
+                    frame.logicalPageId = undefined;
+                    frame.pid = undefined;
+                    // ... limpiar otros campos del frame
+                    newState.metrics.ramUsedKb -= PAGE_SIZE_KB;
+                } else {
+                    newState.metrics.vRamUsedKb -= PAGE_SIZE_KB;
+                }
+                newState.mmu.splice(pageIndex, 1);
+            }
+            newState.activePointers.delete(ptrId);
+        }
+        break;
+      }
+    }
+
+    // --- 2. Actualizar Métricas Comunes ---
+    // Procesos corriendo: contar PIDs únicos en activePointers
+    const runningPids = new Set<string>();
+    newState.activePointers.forEach(info => runningPids.add(info.pid));
+    newState.metrics.runningProcessesCount = runningPids.size;
+
+    newState.metrics.ramUsedPercentage = (newState.metrics.ramUsedKb / TOTAL_RAM_KB) * 100;
+    newState.metrics.vRamUsedPercentageOfRam = newState.metrics.vRamUsedKb > 0 ? (newState.metrics.vRamUsedKb / TOTAL_RAM_KB) * 100 : 0;
+    
+    // Fragmentación interna: (TamañoMarco - TamañoContenidoRealEnMarco)
+    // Solo para páginas en RAM.
+    newState.metrics.internalFragmentationKb = 0;
+    newState.ramFrames.forEach(frame => {
+        if (frame.isOccupied && frame.logicalPageId) {
+            const logicalPage = newState.mmu.find(p => p.id === frame.logicalPageId);
+            if (logicalPage) {
+                const wastedBytes = PAGE_SIZE_BYTES - logicalPage.contentSizeBytes;
+                newState.metrics.internalFragmentationKb += wastedBytes / 1024;
+            }
+        }
+    });
+    
+    return newState;
+  }, []);
+
+
   const runSimulationStep = useCallback(() => {
     if (currentOperationIndex >= operations.length) {
       setIsPaused(true);
-      alert("Simulación completada!");
+      // alert("Simulación completada!"); // Evitar alert
+      console.log("Simulación completada!");
       return;
     }
 
     const currentOp = operations[currentOperationIndex];
-    console.log(`Procesando Op ${currentOperationIndex + 1}: ${currentOp.type} PID ${currentOp.pid}`, currentOp);
 
-    // --- INICIO DE LÓGICA DE SIMULACIÓN DE EJEMPLO (MUY BÁSICA) ---
-    // Esta es una simulación MUY básica solo para mostrar cambios en la UI.
-    // La lógica real de paginación, MMU, fallos, hits, etc., es compleja y debe implementarse aquí.
-
-    const processOneAlgorithm = (
-        currentState: { ram: PageRepresentation[], mmu: MmuPageDetail[], metrics: AlgorithmMetrics },
-        algoName: string
-    ): { ram: PageRepresentation[], mmu: MmuPageDetail[], metrics: AlgorithmMetrics } => {
-        let newRam = [...currentState.ram];
-        let newMmu = [...currentState.mmu];
-        let newMetrics = { ...currentState.metrics };
-
-        newMetrics.totalSimulationTime += 1; // Asumir 1s por hit por defecto
-
-        const existingPageDetailIndex = newMmu.findIndex(p => p.ptrId === currentOp.ptrId && p.pid === currentOp.pid);
-        let pageDetail: MmuPageDetail | undefined = existingPageDetailIndex !== -1 ? newMmu[existingPageDetailIndex] : undefined;
-
-        switch (currentOp.type) {
-            case 'new':
-                // Simular asignación de página
-                const numPagesNeeded = Math.ceil((currentOp.size || PAGE_SIZE_KB * 1024) / (PAGE_SIZE_KB * 1024)); // size en Bytes
-                let pagesAllocated = 0;
-                for (let i = 0; i < numPagesNeeded; i++) {
-                    const newPageId = `ptr${currentOp.ptrId}_page${i}_${algoName}`;
-                    let assignedRamSlot = -1;
-
-                    // Buscar espacio libre en RAM
-                    const freeSlotIndex = newRam.findIndex(p => !p.isLoadedInRam);
-                    if (freeSlotIndex !== -1) {
-                        newRam[freeSlotIndex] = {
-                            ...newRam[freeSlotIndex],
-                            id: newPageId,
-                            pid: currentOp.pid,
-                            isLoadedInRam: true,
-                            loadedTimestamp: newMetrics.totalSimulationTime,
-                        };
-                        assignedRamSlot = freeSlotIndex;
-                        newMetrics.ramUsedKb += PAGE_SIZE_KB;
-                        pagesAllocated++;
-                    } else {
-                        // Simular fallo de página (necesita reemplazo, no implementado aquí)
-                        newMetrics.totalSimulationTime += 4; // 5s (1s base + 4s extra por fallo)
-                        newMetrics.thrashingTime += 5;
-                        // Aquí iría la lógica de reemplazo de página
-                        // Por ahora, solo se añade a VRAM (simulado)
-                        newMetrics.vRamUsedKb += PAGE_SIZE_KB;
-                        console.warn(`[${algoName}] Fallo de página (NEW): No hay espacio en RAM para ${newPageId}. Se requeriría reemplazo.`);
-                    }
-                    
-                    const newDetail: MmuPageDetail = {
-                        id: newPageId,
-                        pid: currentOp.pid,
-                        ptrId: currentOp.ptrId !== undefined ? currentOp.ptrId : -1,
-                        isLoadedInRam: assignedRamSlot !== -1,
-                        physicalAddress: assignedRamSlot !== -1 ? assignedRamSlot : undefined,
-                        diskAddress: assignedRamSlot === -1 ? `disk_loc_${newPageId}` : undefined,
-                        loadedTimestamp: assignedRamSlot !== -1 ? newMetrics.totalSimulationTime : undefined,
-                        sizeBytes: currentOp.size, // O tamaño de página si es por página
-                        mark: algoName === 'SC' ? 'R=0' : undefined, // Ejemplo para Second Chance
-                    };
-                    newMmu.push(newDetail);
-                }
-                 if (!newMetrics.runningProcessesCount || !newMmu.find(p => p.pid === currentOp.pid)) {
-                    const uniquePids = new Set(newMmu.map(p => p.pid).filter(pid => pid !== undefined));
-                    newMetrics.runningProcessesCount = uniquePids.size;
-                }
-                break;
-
-            case 'use':
-                if (pageDetail) {
-                    if (!pageDetail.isLoadedInRam) {
-                        // Simular fallo de página (traer de disco)
-                        newMetrics.totalSimulationTime += 4; // 5s (1s base + 4s extra por fallo)
-                        newMetrics.thrashingTime += 5;
-                        // Lógica para traer a RAM (puede implicar reemplazo)
-                        const freeSlotIndex = newRam.findIndex(p => !p.isLoadedInRam);
-                        if (freeSlotIndex !== -1) {
-                            newRam[freeSlotIndex] = {
-                                ...newRam[freeSlotIndex], // Conserva el ID de marco de página
-                                id: pageDetail.id, // ID de la página lógica
-                                pid: currentOp.pid,
-                                isLoadedInRam: true,
-                                loadedTimestamp: newMetrics.totalSimulationTime,
-                            };
-                            pageDetail.isLoadedInRam = true;
-                            pageDetail.physicalAddress = freeSlotIndex;
-                            pageDetail.diskAddress = undefined;
-                            pageDetail.loadedTimestamp = newMetrics.totalSimulationTime;
-                            newMetrics.ramUsedKb += PAGE_SIZE_KB;
-                            newMetrics.vRamUsedKb -= PAGE_SIZE_KB; // Asumiendo que estaba en VRAM
-                        } else {
-                             console.warn(`[${algoName}] Fallo de página (USE): No hay espacio en RAM para ${pageDetail.id} y no hay reemplazo simple.`);
-                        }
-                    }
-                    if (algoName === 'SC' && pageDetail.isLoadedInRam) pageDetail.mark = 'R=1'; // Marcar como referenciada para SC
-                } else {
-                    console.error(`[${algoName}] Error: Intento de usar puntero no existente ${currentOp.ptrId} por PID ${currentOp.pid}`);
-                    newMetrics.totalSimulationTime += 0; // O penalizar
-                }
-                break;
-
-            case 'delete':
-                newMmu = newMmu.filter(p => {
-                    if (p.ptrId === currentOp.ptrId && p.pid === currentOp.pid) {
-                        if (p.isLoadedInRam && p.physicalAddress !== undefined) {
-                            newRam[p.physicalAddress] = { // Liberar marco en RAM
-                                id: `ram_page_${algoName}_${p.physicalAddress}`, // Resetear ID del marco
-                                isLoadedInRam: false,
-                                pid: undefined,
-                                physicalAddress: p.physicalAddress,
-                            };
-                            newMetrics.ramUsedKb -= PAGE_SIZE_KB;
-                        } else if (!p.isLoadedInRam) {
-                            newMetrics.vRamUsedKb -= PAGE_SIZE_KB;
-                        }
-                        // Calcular fragmentación interna liberada (simplificado)
-                        // newMetrics.internalFragmentationKb -= ...
-                        return false; // Eliminar de MMU
-                    }
-                    return true;
-                });
-                break;
-
-            case 'kill':
-                let ramFreedKb = 0;
-                let vRamFreedKb = 0;
-                newMmu = newMmu.filter(p => {
-                    if (p.pid === currentOp.pid) {
-                        if (p.isLoadedInRam && p.physicalAddress !== undefined) {
-                            newRam[p.physicalAddress] = {
-                                id: `ram_page_${algoName}_${p.physicalAddress}`,
-                                isLoadedInRam: false,
-                                pid: undefined,
-                                physicalAddress: p.physicalAddress,
-                            };
-                            ramFreedKb += PAGE_SIZE_KB;
-                        } else if (!p.isLoadedInRam) {
-                            vRamFreedKb += PAGE_SIZE_KB;
-                        }
-                        return false;
-                    }
-                    return true;
-                });
-                newMetrics.ramUsedKb -= ramFreedKb;
-                newMetrics.vRamUsedKb -= vRamFreedKb;
-                const uniquePids = new Set(newMmu.map(p => p.pid).filter(pid => pid !== undefined));
-                newMetrics.runningProcessesCount = uniquePids.size;
-                break;
-        }
-        
-        // Actualizar porcentaje de RAM usada
-        newMetrics.ramUsedPercentage = (newMetrics.ramUsedKb / (TOTAL_RAM_PAGES * PAGE_SIZE_KB)) * 100;
-        newMetrics.vRamUsedPercentageOfRam = (newMetrics.vRamUsedKb / (TOTAL_RAM_PAGES * PAGE_SIZE_KB)) * 100;
-        
-        // Simular fragmentación interna (muy simplificado)
-        newMetrics.internalFragmentationKb = newMmu.reduce((acc, p) => {
-            if (p.isLoadedInRam && p.sizeBytes) {
-                const pagesForThisPtr = Math.ceil(p.sizeBytes / (PAGE_SIZE_KB * 1024));
-                const allocatedBytes = pagesForThisPtr * PAGE_SIZE_KB * 1024;
-                // Esto es incorrecto si un ptr usa múltiples páginas, se debe sumar por página.
-                // Para una simulación correcta, cada MmuPageDetail debería ser UNA página.
-                // Y el ptrId agruparía varias MmuPageDetail.
-                // Aquí, asumimos que p.sizeBytes es para UNA página, lo cual no es realista si sizeBytes > PAGE_SIZE_KB.
-                // Para una simulación más precisa, la fragmentación se calcula por página.
-                // Si una página lógica (parte de un ptr) tiene X bytes y se le asigna un marco de Y bytes (PAGE_SIZE_KB),
-                // la fragmentación es Y - (X % Y) si X es la última parte del ptr.
-                // Esta es una simplificación burda.
-                const lastPageSize = p.sizeBytes % (PAGE_SIZE_KB * 1024);
-                if (lastPageSize > 0 && lastPageSize < PAGE_SIZE_KB * 1024) {
-                     acc += (PAGE_SIZE_KB * 1024) - lastPageSize;
-                }
-            }
-            return acc;
-        }, 0) / 1024; // Convertir a KB
-
-
-        return { ram: newRam, mmu: newMmu, metrics: newMetrics };
-    };
-
-    // Aplicar la operación a ambos algoritmos
-    // En una simulación real, OPT tendría su propia lógica predictiva.
-    // Aquí, ambos usan la misma lógica reactiva básica para demostración.
-    setOptState(prevState => processOneAlgorithm(prevState, 'OPT'));
-    setSelectedAlgoState(prevState => processOneAlgorithm(prevState, params.selectedAlgorithm));
-
-    // --- FIN DE LÓGICA DE SIMULACIÓN DE EJEMPLO ---
+    setOptSimState(prevState => processAlgorithmStep(prevState, currentOp, operations, currentOperationIndex));
+    setSelectedAlgoSimState(prevState => processAlgorithmStep(prevState, currentOp, operations, currentOperationIndex));
 
     setCurrentOperationIndex(prev => prev + 1);
-  }, [currentOperationIndex, operations, params.selectedAlgorithm, PAGE_SIZE_KB, TOTAL_RAM_PAGES]);
+  }, [currentOperationIndex, operations, processAlgorithmStep]);
 
-  // Efecto para manejar el "reloj" de la simulación
   useEffect(() => {
     if (!isPaused && currentOperationIndex < operations.length) {
-      const timerId = setTimeout(runSimulationStep, simulationSpeed);
+      const timerId = setTimeout(runSimulationStep, simulationSpeedMs);
       return () => clearTimeout(timerId);
     }
-  }, [isPaused, runSimulationStep, simulationSpeed, currentOperationIndex, operations.length]);
+  }, [isPaused, runSimulationStep, simulationSpeedMs, currentOperationIndex, operations.length]);
 
   const handleResetSimulation = () => {
-      setCurrentOperationIndex(0);
-      setOptState(getInitialAlgorithmState('OPT'));
-      setSelectedAlgoState(getInitialAlgorithmState(params.selectedAlgorithm));
-      setIsPaused(true);
+    setCurrentOperationIndex(0);
+    setOptSimState(getInitialAlgorithmSimulationState('OPT', params.seed, initialNextPtrId));
+    setSelectedAlgoSimState(getInitialAlgorithmSimulationState(params.selectedAlgorithm, params.seed, initialNextPtrId));
+    setIsPaused(true);
   };
 
-  const handleSpeedChange = (newSpeed: number) => {
-      // newSpeed: 1 = más rápido (100ms), 2 = normal (500ms), 3 = más lento (1000ms)
-      if (newSpeed === 1) setSimulationSpeed(100);
-      else if (newSpeed === 2) setSimulationSpeed(500);
-      else setSimulationSpeed(1000); // Default
-  }
-
+  const handleSpeedChange = (newSpeedValue: string) => {
+    setSimulationSpeedMs(Number(newSpeedValue));
+  };
+  
+  const currentOpForDisplay = operations[currentOperationIndex];
 
   return (
-    <div className="w-full max-w-7xl flex flex-col items-center">
-      {/* Controles de Simulación */}
-      <div className="w-full flex justify-between items-center mb-6 p-4 bg-gray-800 rounded-lg shadow-md">
+    <div className="w-full max-w-7xl mx-auto flex flex-col items-center p-4 text-gray-100">
+      <div className="w-full flex flex-col sm:flex-row justify-between items-center mb-6 p-4 bg-gray-800 rounded-lg shadow-md space-y-3 sm:space-y-0">
         <button
           onClick={onBackToSetup}
           className="px-4 py-2 bg-gray-600 hover:bg-gray-500 text-white font-semibold rounded-lg transition-colors flex items-center"
         >
-          <ChevronLeft className="mr-2 h-5 w-5" /> Volver a Configuración
+          <ChevronLeft className="mr-2 h-5 w-5" /> Volver
         </button>
-        <div className="flex items-center space-x-3">
+        <div className="flex items-center space-x-2 sm:space-x-3">
           <button
             onClick={() => setIsPaused(!isPaused)}
-            className={`px-4 py-2 font-semibold rounded-lg transition-colors flex items-center
-                        ${isPaused ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-gray-900'}`}
+            disabled={currentOperationIndex >= operations.length}
+            className={`px-3 py-2 font-semibold rounded-lg transition-colors flex items-center text-sm
+                        ${isPaused ? 'bg-green-500 hover:bg-green-600 text-white' : 'bg-yellow-500 hover:bg-yellow-600 text-gray-900'}
+                        disabled:opacity-50 disabled:cursor-not-allowed`}
           >
-            {isPaused ? <PlayIcon className="mr-2 h-5 w-5" /> : <Pause className="mr-2 h-5 w-5" />}
-            {isPaused ? (currentOperationIndex === 0 ? 'Iniciar' : 'Reanudar') : 'Pausar'}
+            {isPaused ? <PlayIcon className="mr-1.5 h-5 w-5" /> : <Pause className="mr-1.5 h-5 w-5" />}
+            {isPaused ? (currentOperationIndex === 0 ? 'Iniciar' : (currentOperationIndex >= operations.length ? 'Fin' : 'Reanudar')) : 'Pausar'}
           </button>
-           <button
+          <button
             onClick={handleResetSimulation}
-            disabled={currentOperationIndex === 0 && isPaused}
-            className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg transition-colors flex items-center disabled:opacity-50"
+            className="px-3 py-2 bg-red-500 hover:bg-red-600 text-white font-semibold rounded-lg transition-colors flex items-center text-sm"
           >
-            <RefreshCw className="mr-2 h-5 w-5" /> Reiniciar
+            <RefreshCw className="mr-1.5 h-5 w-5" /> Reiniciar
           </button>
-          <select onChange={(e) => handleSpeedChange(Number(e.target.value))} defaultValue="3" className="bg-gray-700 text-white p-2 rounded-lg border border-gray-600 focus:ring-cyan-500 focus:border-cyan-500 outline-none">
-              <option value="1">Rápido (0.1s)</option>
-              <option value="2">Normal (0.5s)</option>
-              <option value="3">Lento (1s)</option>
+          <select 
+            onChange={(e) => handleSpeedChange(e.target.value)} 
+            value={simulationSpeedMs}
+            className="bg-gray-700 text-white p-2 rounded-lg border border-gray-600 focus:ring-cyan-500 focus:border-cyan-500 outline-none text-sm"
+          >
+            <option value="2000">Lento (2s)</option>
+            <option value="1000">Normal (1s)</option>
+            <option value="500">Rápido (0.5s)</option>
+            <option value="100">Muy Rápido (0.1s)</option>
           </select>
         </div>
-        <div className="text-sm text-gray-300">
-          Operación: {Math.min(currentOperationIndex + 1, operations.length)} / {operations.length}
+        <div className="text-sm text-gray-300 text-center sm:text-right">
+          Op: {Math.min(currentOperationIndex +1, operations.length)} / {operations.length}
         </div>
       </div>
 
-      {/* Visualizadores de Algoritmos */}
+      {currentOpForDisplay && !isPaused && (
+        <div className="mb-4 p-3 bg-gray-700 rounded-lg shadow w-full max-w-xl text-center">
+            <p className="text-sm text-cyan-300">
+                Ejecutando Op #{currentOperationIndex}: <span className="font-mono text-yellow-400">{currentOpForDisplay.type.toUpperCase()}</span>
+                {currentOpForDisplay.pid && ` PID: ${currentOpForDisplay.pid}`}
+                {currentOpForDisplay.ptrId !== undefined && ` PtrID: ${currentOpForDisplay.ptrId}`}
+                {currentOpForDisplay.size !== undefined && ` Tamaño: ${currentOpForDisplay.size}B`}
+            </p>
+        </div>
+      )}
+
       <div className="w-full grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <AlgorithmVisualizer
-          algorithmName="Óptimo (OPT)"
-          ramPages={optState.ram}
-          mmuPageDetails={optState.mmu}
-          metrics={optState.metrics}
-          pageSizeKb={PAGE_SIZE_KB}
-        />
-        <AlgorithmVisualizer
-          algorithmName={params.selectedAlgorithm}
-          ramPages={selectedAlgoState.ram}
-          mmuPageDetails={selectedAlgoState.mmu}
-          metrics={selectedAlgoState.metrics}
-          pageSizeKb={PAGE_SIZE_KB}
-        />
+        <AlgorithmVisualizer simState={optSimState} pageSizeKb={PAGE_SIZE_KB} />
+        <AlgorithmVisualizer simState={selectedAlgoSimState} pageSizeKb={PAGE_SIZE_KB} />
       </div>
-       {/* Leyenda de Operación Actual (Opcional) */}
-       {currentOperationIndex < operations.length && !isPaused && (
-            <div className="mt-6 p-3 bg-gray-700 rounded-lg shadow w-full max-w-md text-center">
-                <p className="text-sm text-cyan-300">
-                    Ejecutando: <span className="font-mono text-yellow-400">{operations[currentOperationIndex].type.toUpperCase()}</span>
-                    {operations[currentOperationIndex].pid && ` para PID: ${operations[currentOperationIndex].pid}`}
-                    {operations[currentOperationIndex].ptrId && ` con PtrID: ${operations[currentOperationIndex].ptrId}`}
-                    {operations[currentOperationIndex].size && ` de Tamaño: ${operations[currentOperationIndex].size}B`}
-                </p>
-            </div>
-        )}
     </div>
   );
 };
