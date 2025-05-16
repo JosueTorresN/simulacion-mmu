@@ -104,7 +104,7 @@ const operationsToCsv = (operations: ProcessInstruction[]): string => {
 };
 
 export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartSimulation }) => {
-  const [seed, setSeed] = useState<string>('miSemilla123');
+  const [seed, setSeed] = useState<string>('Ingresar semilla');
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<AlgoName>('FIFO');
   const [operationsFile, setOperationsFile] = useState<File | null>(null);
   const [numberOfProcesses, setNumberOfProcesses] = useState<number>(10);
