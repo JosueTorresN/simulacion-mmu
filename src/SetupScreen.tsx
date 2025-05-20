@@ -348,6 +348,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartSimulation }) =
             <option value="FIFO">FIFO (First-In, First-Out)</option>
             <option value="SC">SC (Second Chance)</option>
             <option value="MRU">MRU (Most Recently Used)</option>
+            <option value="LRU">LRU (Least Recently Used)</option>
             <option value="RND">RND (Random)</option>
             {/* OPT se simula siempre, no es una opción seleccionable aquí */}
           </select>
