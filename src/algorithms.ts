@@ -129,6 +129,35 @@ export const mruAlgorithm: PageReplacementAlgorithmFn = (context) => {
   };
 };
 
+// --- LRU (Least Recently Used) ---
+export const lruAlgorithm: PageReplacementAlgorithmFn = (context) => {
+  let mostRecentFrame: PageFrame | null = null;
+  let mostRecentAccessTime = Infinity;
+
+  for (const frame of context.ramFrames) {
+    if (frame.isOccupied) {
+      const logicalPage = getLogicalPageFromFrame(frame, context.mmu);
+      if (logicalPage && logicalPage.ramLastAccessTimestamp !== undefined) {
+        if (logicalPage.ramLastAccessTimestamp < mostRecentAccessTime) {
+          mostRecentAccessTime = logicalPage.ramLastAccessTimestamp;
+          mostRecentFrame = frame;
+        }
+      } else if (logicalPage && !mostRecentFrame) {
+        // Caso borde: si alguna página no tiene timestamp pero otras sí, o es la primera.
+        mostRecentFrame = frame; // Tomar la primera ocupada si no hay timestamps.
+      }
+    }
+  }
+
+  if (!mostRecentFrame) {
+    throw new Error("[MRU] No hay marcos ocupados para elegir una víctima.");
+  }
+  return {
+    victimFrameId: mostRecentFrame.frameId,
+    victimLogicalPageId: mostRecentFrame.logicalPageId,
+  };
+};
+
 // --- RND (Random) ---
 export const rndAlgorithm: PageReplacementAlgorithmFn = (context) => {
   const occupiedFrames = context.ramFrames.filter(f => f.isOccupied);
@@ -211,6 +240,7 @@ export const pageReplacementAlgorithms: Record<AlgorithmName, PageReplacementAlg
   FIFO: fifoAlgorithm,
   SC: scAlgorithm, // SC puede necesitar manejo especial en SimulationScreen
   MRU: mruAlgorithm,
+  LRU: lruAlgorithm,
   RND: rndAlgorithm,
   OPT: optAlgorithm,
 };

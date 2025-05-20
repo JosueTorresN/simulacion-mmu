@@ -4,7 +4,7 @@
 /**
  * Nombres de los algoritmos de reemplazo de páginas.
  */
-export type AlgorithmName = 'FIFO' | 'SC' | 'MRU' | 'RND' | 'OPT';
+export type AlgorithmName = 'FIFO' | 'SC' | 'MRU' | 'RND' | 'OPT' | 'LRU';
 
 /**
  * Representa una instrucción individual leída del archivo o generada.
