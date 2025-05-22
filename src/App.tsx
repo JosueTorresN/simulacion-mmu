@@ -6,10 +6,6 @@ import { SimulationScreen } from './SimulationScreen';
 import type { PageRepresentation } from './types';
 import type { AlgorithmName, ProcessInstruction } from './types';
 
-// Estilos globales y de Tailwind (asegúrate de tener Tailwind configurado en tu proyecto)
-// Generalmente, esto se importa en tu archivo principal como index.tsx o main.tsx
-// import './index.css'; // Si tienes un archivo CSS global con Tailwind
-
 // Tipos de estado para la aplicación
 export type AppScreen = 'setup' | 'simulation';
 

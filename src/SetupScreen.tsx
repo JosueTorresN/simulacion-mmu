@@ -1,4 +1,3 @@
-// SetupScreen.tsx
 // Pantalla para configurar los parámetros de la simulación.
 import React, { useState, useCallback } from 'react';
 import type { ChangeEvent, FormEvent } from 'react';
@@ -267,14 +266,13 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartSimulation }) =
         return;
       }
       simulationParams = {
-        seed, // La semilla aún puede ser relevante para RND si el archivo no la define
+        seed,
         selectedAlgorithm,
         fileName: operationsFile.name,
         // numberOfProcesses y totalOperations no son de la config si se usa archivo
       };
     } else if (generatedFileContent) {
-      // Usar operaciones previamente generadas y su nextPtrId
-      const parsedData = parseCsvToOperations(generatedFileContent); // Re-parsear para asegurar consistencia
+      const parsedData = parseCsvToOperations(generatedFileContent);
       opsToSimulate = parsedData.ops;
       finalNextPtrId = parsedData.nextPtrId;
 
@@ -287,7 +285,7 @@ export const SetupScreen: React.FC<SetupScreenProps> = ({ onStartSimulation }) =
     } else {
       // Generar operaciones si no hay archivo ni contenido generado (ej. si el usuario solo da clic a "Iniciar")
       opsToSimulate = generateOperations(numberOfProcesses, totalOperations, seed);
-      finalNextPtrId = globalNextPtrId; // Usar el globalNextPtrId de la última generación
+      finalNextPtrId = globalNextPtrId;
       simulationParams = {
         seed,
         selectedAlgorithm,

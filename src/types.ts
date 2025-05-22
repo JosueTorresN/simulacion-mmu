@@ -1,6 +1,3 @@
-// types.ts
-// Archivo para definir los tipos y estructuras de datos compartidas en la simulación.
-
 /**
  * Nombres de los algoritmos de reemplazo de páginas.
  */

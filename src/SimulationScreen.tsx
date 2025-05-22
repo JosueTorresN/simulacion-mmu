@@ -1,4 +1,3 @@
-// SimulationScreen.tsx
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import type { SimulationParameters } from './SetupScreen';
 import type {
@@ -23,7 +22,7 @@ const TOTAL_RAM_KB = TOTAL_RAM_FRAMES * PAGE_SIZE_KB;
 const HIT_TIME = 1; // 1s
 const FAULT_TIME = 5; // 5s (incluye acceso a disco)
 
-// --- Componentes de UI Internos (sin cambios mayores, adaptados a nuevos tipos si es necesario) ---
+// --- Componentes de UI Internos
 interface RamViewProps {
   pages: PageFrame[];
   pageSizeKb: number;
@@ -67,7 +66,7 @@ const RamView: React.FC<RamViewProps> = ({ pages, pageSizeKb, mmu }) => {
 };
 
 interface MmuTableViewProps {
-  logicalPages: ReadonlyArray<LogicalPage>; // Ahora usa LogicalPage[]
+  logicalPages: ReadonlyArray<LogicalPage>;
   pageSizeKb: number;
 }
 const MmuTableView: React.FC<MmuTableViewProps> = ({ logicalPages, pageSizeKb }) => {
@@ -120,7 +119,7 @@ interface MetricsDisplayProps {
 }
 const MetricsDisplay: React.FC<MetricsDisplayProps> = ({ metrics }) => {
   const thrashingDisplayPercentage = metrics.totalSimulationTime > 0 ? (metrics.thrashingTime / metrics.totalSimulationTime) * 100 : 0;
-  metrics.thrashingPercentage = thrashingDisplayPercentage; // Actualizar en el objeto
+  metrics.thrashingPercentage = thrashingDisplayPercentage;
 
   return (
     <div className="grid grid-cols-2 md:grid-cols-3 gap-2 text-xs bg-gray-700 p-3 rounded-lg shadow">
@@ -158,7 +157,7 @@ const AlgorithmVisualizer: React.FC<AlgorithmVisualizerProps> = ({ simState, pag
 interface SimulationScreenProps {
   params: SimulationParameters;
   operations: ProcessInstruction[];
-  initialNextPtrId: number; // El siguiente ptrId global a asignar si se generaron operaciones
+  initialNextPtrId: number;
   onBackToSetup: () => void;
 }
 
@@ -191,7 +190,7 @@ const getInitialAlgorithmSimulationState = (
     scHandPosition: 0,
     nextPtrIdToAssign: initialPtrId,
     activePointers: new Map<number, { pid: string; pageIds: string[] }>(),
-    rng: seedrandom(seed + name), // Usar semilla + nombre para RND diferente por panel si es necesario
+    rng: seedrandom(seed + name),
   };
 };
 
@@ -216,7 +215,6 @@ export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, oper
   ): AlgorithmSimulationState => {
     
     let newState = JSON.parse(JSON.stringify(currentSimState)) as AlgorithmSimulationState; // Deep copy
-    // Restaurar funciones y Mapas que no se serializan bien con JSON.parse(JSON.stringify())
     newState.rng = currentSimState.rng; 
     newState.activePointers = new Map(currentSimState.activePointers);
 
@@ -246,13 +244,13 @@ export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, oper
             pid,
             ptrId: assignedPtrId,
             pageIndexInPtr: i,
-            isLoadedInRam: false, // Se determinará a continuación
+            isLoadedInRam: false,
             contentSizeBytes: contentSize,
-            diskAddress: `disk_${logicalPageId}`, // Dirección inicial en disco
-            referencedBit: algorithmName === 'SC' ? false : undefined, // R=0 para SC inicialmente
+            diskAddress: `disk_${logicalPageId}`,
+            referencedBit: algorithmName === 'SC' ? false : undefined,
           };
           newState.mmu.push(newPage);
-          newState.metrics.vRamUsedKb += PAGE_SIZE_KB; // Asumir que va a VRAM inicialmente si no cabe en RAM
+          newState.metrics.vRamUsedKb += PAGE_SIZE_KB;
 
           // Intentar cargar en RAM
           const freeFrame = newState.ramFrames.find(f => !f.isOccupied);
@@ -270,7 +268,7 @@ export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, oper
             freeFrame.lastAccessTimestamp = newState.metrics.totalSimulationTime;
             freeFrame.referencedBit = newPage.referencedBit;
 
-            newState.metrics.pageHits++; // Considerar 'new' en frame libre como hit
+            newState.metrics.pageHits++;
             newState.metrics.totalSimulationTime += HIT_TIME;
             newState.metrics.ramUsedKb += PAGE_SIZE_KB;
             newState.metrics.vRamUsedKb -= PAGE_SIZE_KB; // Se movió de VRAM a RAM
@@ -393,7 +391,7 @@ export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, oper
                             victimLogicalPage.frameId = undefined;
                             victimLogicalPage.diskAddress = `disk_${victimLogicalPage.id}`;
                             newState.metrics.vRamUsedKb += PAGE_SIZE_KB; // Víctima a disco
-                            // ramUsedKb no cambia aún, la nueva página ocupará este espacio.
+                            // ramUsedKb no cambia aún, la nueva página ocupa este espacio.
                         }
                     }
                      if (algorithmName === 'SC') { // Manejo SC post-decisión
@@ -415,8 +413,6 @@ export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, oper
                 page.frameId = frameToLoadInto.frameId;
                 page.diskAddress = undefined;
                 page.ramLoadTimestamp = newState.metrics.totalSimulationTime; // Nuevo tiempo de carga
-                // page.ramLastAccessTimestamp ya se actualizó arriba
-                // page.referencedBit ya se actualizó arriba para SC
 
                 frameToLoadInto.isOccupied = true;
                 frameToLoadInto.logicalPageId = page.id;
@@ -494,8 +490,7 @@ export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, oper
       }
     }
 
-    // --- 2. Actualizar Métricas Comunes ---
-    // Procesos corriendo: contar PIDs únicos en activePointers
+    // --- 2. Actualizar Métricas Comunes
     const runningPids = new Set<string>();
     newState.activePointers.forEach(info => runningPids.add(info.pid));
     newState.metrics.runningProcessesCount = runningPids.size;
@@ -503,8 +498,6 @@ export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, oper
     newState.metrics.ramUsedPercentage = (newState.metrics.ramUsedKb / TOTAL_RAM_KB) * 100;
     newState.metrics.vRamUsedPercentageOfRam = newState.metrics.vRamUsedKb > 0 ? (newState.metrics.vRamUsedKb / TOTAL_RAM_KB) * 100 : 0;
     
-    // Fragmentación interna: (TamañoMarco - TamañoContenidoRealEnMarco)
-    // Solo para páginas en RAM.
     newState.metrics.internalFragmentationKb = 0;
     newState.ramFrames.forEach(frame => {
         if (frame.isOccupied && frame.logicalPageId) {
@@ -523,7 +516,6 @@ export const SimulationScreen: React.FC<SimulationScreenProps> = ({ params, oper
   const runSimulationStep = useCallback(() => {
     if (currentOperationIndex >= operations.length) {
       setIsPaused(true);
-      // alert("Simulación completada!"); // Evitar alert
       console.log("Simulación completada!");
       return;
     }
